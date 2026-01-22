@@ -1,0 +1,751 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+// 1. Configuración Server-Side
+// ---------------------------------------------------------
+// Hack para desarrollo: Permite que Node.js acepte el certificado 
+// autofirmado de Localhost de .NET (Solo usar en desarrollo)
+process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = 0;
+
+const API_BASE = 'https://localhost:44317/api/todo';
+let serverTasks = [];
+let fetchError = '';
+
+try {
+    const response = await fetch(API_BASE);
+    if (response.ok) {
+        const result = await response.json();
+        // Asumiendo la estructura ML.Result { Objects: [...] }
+        serverTasks = result.Objects || [];
+    } else {
+        fetchError = `Error del servidor: ${response.status}`;
+    }
+} catch (error) {
+    console.error("Error fetching tasks server-side:", error);
+    fetchError = "No se pudo conectar con la API de .NET";
+}
+---
+
+<Layout>
+    <main class="page">
+        <header class="header">
+            <div>
+                <p class="eyebrow">PL TODO</p>
+                <h1>Tablero de tareas</h1>
+                <p class="lead">
+                    Organiza pendientes, marca avances y conserva tu foco diario con una vista
+                    simple y clara.
+                </p>
+            </div>
+        </header>
+
+        <section class="board">
+            <aside class="panel">
+                <div class="panel__head">
+                    <h2>Nueva tarea</h2>
+                    <span class="chip" data-count>{serverTasks.length} tareas</span>
+                </div>
+                <form class="form" data-form>
+                    <label class="field">
+                        <span>Titulo</span>
+                        <input
+                            type="text"
+                            name="titulo"
+                            placeholder="Ej. Preparar presentacion"
+                            required
+                            data-title
+                        />
+                    </label>
+                    <label class="field">
+                        <span>Descripcion</span>
+                        <textarea
+                            name="descripcion"
+                            rows="4"
+                            placeholder="Notas opcionales para la tarea"
+                            data-desc
+                        ></textarea>
+                    </label>
+                    <div class="form__row">
+                        <button class="primary" type="submit">Guardar</button>
+                        <button class="ghost" type="button" data-clear>Limpiar</button>
+                    </div>
+                    <p class="hint">El titulo es obligatorio. La tarea inicia como pendiente.</p>
+                    <p class="error" data-form-error hidden></p>
+                </form>
+                <div class="filters">
+                    <label for="filtro">Mostrar</label>
+                    <select id="filtro" data-filter>
+                        <option value="">Todas</option>
+                        <option value="1">Pendientes</option>
+                        <option value="2">Completadas</option>
+                    </select>
+                </div>
+                <p class="error" data-fetch-error {fetchError ? '' : 'hidden'}>{fetchError}</p>
+            </aside>
+
+            <section class="panel panel--list">
+                <div class="panel__head">
+                    <h2>Lista activa</h2>
+                    <div class="legend">
+                        <span class="dot dot--pending"></span>
+                        Pendiente
+                        <span class="dot dot--done"></span>
+                        Completada
+                    </div>
+                </div>
+                <div class="loading" data-loading hidden>Sincronizando tareas...</div>
+                
+                <div class="list" data-task-list>
+                    {serverTasks.length === 0 && !fetchError ? (
+                        <div class="empty" data-empty>
+                            No hay tareas. Crea la primera a la izquierda.
+                        </div>
+                    ) : null}
+
+                    {serverTasks.map((task) => {
+                        const statusId = task?.Estatus?.n_IdEstatus ?? task?.n_IdEstatus ?? 1;
+                        const statusName = task?.Estatus?.c_Nombre || (statusId === 2 ? 'Completada' : 'Pendiente');
+                        const isDone = statusId === 2;
+                        
+                        return (
+                            <article class={`task ${isDone ? 'is-complete' : ''}`} data-id={task.n_IdTarea}>
+                                <div class="task__meta">
+                                    <span class="task__id">#{task.n_IdTarea}</span>
+                                    <span class={`status ${isDone ? 'status--done' : 'status--pending'}`}>
+                                        {statusName}
+                                    </span>
+                                </div>
+                                <h3>{task.c_Titulo}</h3>
+                                {task.c_Descripcion && <p class="task__desc">{task.c_Descripcion}</p>}
+                                <div class="task__actions">
+                                    <button class="ghost small" type="button" data-action="toggle" data-id={task.n_IdTarea} data-status={statusId}>
+                                        {isDone ? 'Marcar pendiente' : 'Completar'}
+                                    </button>
+                                    <button class="danger small" type="button" data-action="delete" data-id={task.n_IdTarea}>
+                                        Eliminar
+                                    </button>
+                                </div>
+                            </article>
+                        );
+                    })}
+                </div>
+            </section>
+        </section>
+    </main>
+</Layout>
+
+<script define:vars={{ initialTasks: serverTasks, apiBase: API_BASE }}>
+    window.SERVER_DATA = initialTasks;
+    window.API_BASE = apiBase;
+</script>
+
+<script type="module">
+    // Leemos la configuración inyectada desde el servidor
+    const API_BASE = window.API_BASE;
+
+    const ui = {
+        form: document.querySelector('[data-form]'),
+        title: document.querySelector('[data-title]'),
+        desc: document.querySelector('[data-desc]'),
+        clear: document.querySelector('[data-clear]'),
+        filter: document.querySelector('[data-filter]'),
+        list: document.querySelector('[data-task-list]'),
+        empty: document.querySelector('[data-empty]'),
+        loading: document.querySelector('[data-loading]'),
+        count: document.querySelector('[data-count]'),
+        formError: document.querySelector('[data-form-error]'),
+        fetchError: document.querySelector('[data-fetch-error]'),
+    };
+
+    // Inicializamos el estado con los datos que ya trajo el servidor
+    const state = {
+        tasks: window.SERVER_DATA || [],
+        filter: '',
+    };
+
+    // --- Helpers de Red ---
+    const parseJson = async (response) => {
+        try { return await response.json(); } catch { return null; }
+    };
+
+    const ensureOk = (response, data) => {
+        if (!response.ok) {
+            // Mejor manejo de errores 400 y otros
+            const message = data?.ErrorMessage || data?.Mensaje || data?.message || 
+                          (response.status === 400 ? 'Solicitud inválida' : 
+                           response.status === 404 ? 'Recurso no encontrado' :
+                           response.status === 500 ? 'Error del servidor' :
+                           `Error ${response.status}`);
+            throw new Error(message);
+        }
+        
+        // Manejo especial para PUT que devuelve formato anidado
+        if (data && data.Data) {
+            // Si tiene Data, verificamos el Correct dentro
+            if (data.Data.Correct === false) {
+                throw new Error(data.Data.ErrorMessage || 'Operacion no completada');
+            }
+        } else if (data && data.Correct === false) {
+            // Formato estándar ML.Result
+            throw new Error(data.ErrorMessage || 'Operacion no completada');
+        }
+    };
+
+    const setLoading = (isLoading) => {
+        if(ui.loading) ui.loading.hidden = !isLoading;
+    };
+
+    const setMessage = (node, message) => {
+        if (!node) return;
+        node.hidden = !message;
+        node.textContent = message || '';
+    };
+
+    // --- Renderizado (Cliente) ---
+    // Usamos esta función para refrescar la UI después de crear/borrar/filtrar
+    const updateCount = () => {
+        const total = state.tasks.length;
+        if(ui.count) ui.count.textContent = `${total} tarea${total === 1 ? '' : 's'}`;
+    };
+
+    const createTaskElement = (task) => {
+        const statusId = task?.Estatus?.n_IdEstatus ?? task?.n_IdEstatus ?? 1;
+        const statusName = task?.Estatus?.c_Nombre || (statusId === 2 ? 'Completada' : 'Pendiente');
+        const taskId = task?.n_IdTarea;
+        const isDone = statusId === 2;
+
+        const item = document.createElement('article');
+        item.className = `task ${isDone ? 'is-complete' : ''}`;
+        item.dataset.id = taskId;
+
+        item.innerHTML = `
+            <div class="task__meta">
+                <span class="task__id">#${taskId}</span>
+                <span class="status ${isDone ? 'status--done' : 'status--pending'}">${statusName}</span>
+            </div>
+            <h3>${task.c_Titulo || 'Sin titulo'}</h3>
+            ${task.c_Descripcion ? `<p class="task__desc">${task.c_Descripcion}</p>` : ''}
+            <div class="task__actions">
+                <button class="ghost small" type="button" data-action="toggle" data-id="${taskId}" data-status="${statusId}">
+                    ${isDone ? 'Marcar pendiente' : 'Completar'}
+                </button>
+                <button class="danger small" type="button" data-action="delete" data-id="${taskId}">
+                    Eliminar
+                </button>
+            </div>
+        `;
+        return item;
+    };
+
+    const renderTasks = () => {
+        ui.list.innerHTML = '';
+        
+        // Filtramos en memoria (Cliente) para no hacer peticiones innecesarias
+        let filteredTasks = state.tasks;
+        if (state.filter) {
+            const filterId = parseInt(state.filter);
+            filteredTasks = state.tasks.filter(t => {
+                const sId = t?.Estatus?.n_IdEstatus ?? t?.n_IdEstatus;
+                return sId === filterId;
+            });
+        }
+
+        if (filteredTasks.length === 0) {
+            if(ui.empty) ui.empty.hidden = false;
+        } else {
+            if(ui.empty) ui.empty.hidden = true;
+            filteredTasks.forEach((task) => {
+                ui.list.append(createTaskElement(task));
+            });
+        }
+        updateCount();
+    };
+
+    // --- Acciones (Fetch Cliente) ---
+    // NOTA IMPORTANTE: Estas acciones (POST/PUT/DELETE) aún se ejecutan en el navegador.
+    // Si tienes CORS bloqueado en .NET, estas fallarán aunque la carga inicial funcione.
+    
+    const fetchTasks = async () => {
+        // Esta función recarga todo desde la API (útil tras crear/borrar)
+        setLoading(true);
+        try {
+            // Si hay filtro, lo mandamos al server
+            const query = state.filter ? `?idEstatus=${state.filter}` : '';
+            const response = await fetch(`${API_BASE}${query}`);
+            const data = await parseJson(response);
+            ensureOk(response, data);
+            state.tasks = data?.Objects || [];
+            renderTasks(); // Re-renderizamos con los datos frescos
+        } catch (error) {
+            setMessage(ui.fetchError, error.message || 'Error de sincronización.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const createTask = async (payload) => {
+        setMessage(ui.formError, '');
+        setLoading(true);
+        
+        try {
+            const response = await fetch(API_BASE, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await parseJson(response);
+            ensureOk(response, data);
+            
+            // Si la creación fue exitosa, actualizamos estado local
+            if (data?.Object) {
+                state.tasks.unshift(data.Object); // Agregamos al principio
+                renderTasks();
+            } else {
+                // Fallback: recargar desde servidor
+                await fetchTasks();
+            }
+        } catch (error) {
+            setMessage(ui.formError, error.message || 'No se pudo crear.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleActionClick = async (e) => {
+        const btn = e.target.closest('button');
+        if (!btn) return;
+
+        const { action, id, status } = btn.dataset;
+        if (!action || !id) return;
+
+        setLoading(true);
+        setMessage(ui.fetchError, '');
+        
+        try {
+            if (action === 'delete') {
+                if(!confirm('¿Eliminar tarea?')) return;
+                const response = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
+                const data = await parseJson(response);
+                ensureOk(response, data);
+                
+                // Forzar recarga completa desde servidor para asegurar sincronización
+                await fetchTasks();
+            } 
+            else if (action === 'toggle') {
+                const currentStatus = parseInt(status);
+                const newStatus = currentStatus === 2 ? 1 : 2;
+                const response = await fetch(`${API_BASE}/${id}/estatus/${newStatus}`, { method: 'PUT' });
+                const data = await parseJson(response);
+                ensureOk(response, data);
+                
+                // Forzar recarga completa desde servidor para asegurar sincronización
+                await fetchTasks();
+            }
+        } catch (error) {
+            setMessage(ui.fetchError, error.message || 'Error en la operación');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // --- Event Listeners ---
+    ui.form?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const title = ui.title?.value?.trim();
+        if (!title) {
+            setMessage(ui.formError, 'El titulo es obligatorio.');
+            return;
+        }
+        await createTask({ c_Titulo: title, c_Descripcion: ui.desc?.value?.trim() || null });
+        ui.form.reset();
+    });
+
+    ui.clear?.addEventListener('click', () => {
+        ui.form?.reset();
+        setMessage(ui.formError, '');
+    });
+
+    ui.filter?.addEventListener('change', (event) => {
+        state.filter = event.target.value;
+        // Opcional: Podríamos filtrar solo en cliente o pedir al server
+        fetchTasks(); 
+    });
+
+    // Delegación de eventos para botones dinámicos
+    ui.list?.addEventListener('click', handleActionClick);
+    
+    // Al inicio, no llamamos a fetchTasks() porque ya tenemos datos del servidor (SSR)
+    // Solo actualizamos el contador visual si hiciera falta.
+    updateCount();
+
+</script>
+
+<style>
+   /* ... TUS MISMOS ESTILOS CSS (Cópialos tal cual estaban, no cambian) ... */
+   @import url('https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600&family=Sora:wght@300;400;500;600&display=swap');
+
+    :global(:root) {
+        color-scheme: light;
+        --ink: #1e1712;
+        --ink-muted: #5c4f43;
+        --accent: #ee6a4c;
+        --accent-strong: #e04728;
+        --accent-soft: #f7b8a9;
+        --olive: #2e4d3f;
+        --surface: rgba(255, 255, 255, 0.86);
+        --surface-strong: #ffffff;
+        --shadow: 0 24px 60px rgba(62, 42, 24, 0.2);
+        --border: rgba(61, 40, 25, 0.14);
+    }
+
+    :global(html),
+    :global(body) {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        font-family: 'Sora', system-ui, sans-serif;
+        background:
+            radial-gradient(circle at 10% 15%, #ffe1c7 0%, rgba(255, 225, 199, 0) 50%),
+            radial-gradient(circle at 85% 20%, #dcebdc 0%, rgba(220, 235, 220, 0) 45%),
+            linear-gradient(160deg, #f6efe7 0%, #f4f0eb 60%, #fbe3d6 100%);
+        color: var(--ink);
+    }
+
+    .page {
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+        padding: 48px clamp(20px, 5vw, 64px) 80px;
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    .header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+    }
+
+    .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        font-size: 12px;
+        margin: 0 0 12px;
+        color: var(--olive);
+        font-weight: 600;
+    }
+
+    h1 {
+        font-family: 'Fraunces', serif;
+        font-size: clamp(32px, 5vw, 54px);
+        margin: 0 0 12px;
+        line-height: 1.05;
+    }
+
+    .lead {
+        max-width: 560px;
+        font-size: 16px;
+        line-height: 1.6;
+        color: var(--ink-muted);
+        margin: 0;
+    }
+
+    .header__meta {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .meta-card {
+        background: var(--surface);
+        padding: 12px 16px;
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+    }
+
+    .meta-label {
+        margin: 0;
+        font-size: 12px;
+        color: var(--ink-muted);
+    }
+
+    .meta-value {
+        margin: 6px 0 0;
+        font-weight: 600;
+        font-size: 14px;
+    }
+
+    .board {
+        display: grid;
+        grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.5fr);
+        gap: 24px;
+    }
+
+    .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+    }
+
+    .panel--list {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 420px;
+    }
+
+    .panel__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+    }
+
+    h2 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+    }
+
+    .chip {
+        padding: 6px 12px;
+        background: #fcefe8;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent-strong);
+    }
+
+    .form {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-muted);
+    }
+
+    .field input,
+    .field textarea,
+    .filters select {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font-size: 15px;
+        font-family: 'Sora', system-ui, sans-serif;
+        color: var(--ink);
+        background: var(--surface-strong);
+        outline: none;
+    }
+
+    .field input:focus,
+    .field textarea:focus,
+    .filters select:focus {
+        border-color: var(--accent-strong);
+        box-shadow: 0 0 0 3px rgba(238, 106, 76, 0.2);
+    }
+
+    .form__row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .primary,
+    .ghost,
+    .danger {
+        border: none;
+        border-radius: 999px;
+        padding: 10px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .primary {
+        background: linear-gradient(130deg, var(--accent) 0%, #f39c6b 100%);
+        color: #ffffff;
+        box-shadow: 0 12px 24px rgba(238, 106, 76, 0.35);
+    }
+
+    .ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--ink);
+    }
+
+    .danger {
+        background: rgba(208, 64, 64, 0.12);
+        color: #a82c2c;
+        border: 1px solid rgba(208, 64, 64, 0.3);
+    }
+
+    .small {
+        padding: 8px 14px;
+        font-size: 12px;
+    }
+
+    .primary:hover,
+    .ghost:hover,
+    .danger:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(62, 42, 24, 0.15);
+    }
+
+    .hint {
+        font-size: 13px;
+        color: var(--ink-muted);
+        margin: 0;
+    }
+
+    .filters {
+        margin-top: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--ink-muted);
+    }
+
+    .legend {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 12px;
+        color: var(--ink-muted);
+        flex-wrap: wrap;
+    }
+
+    .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 6px;
+    }
+
+    .dot--pending {
+        background: var(--accent-strong);
+    }
+
+    .dot--done {
+        background: var(--olive);
+    }
+
+    .list {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .task {
+        background: var(--surface-strong);
+        border-radius: 16px;
+        padding: 16px;
+        border: 1px solid rgba(96, 64, 42, 0.12);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .task.is-complete {
+        background: rgba(227, 241, 231, 0.9);
+    }
+
+    .task__meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        color: var(--ink-muted);
+    }
+
+    .task__id {
+        font-weight: 600;
+    }
+
+    .status {
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-weight: 600;
+    }
+
+    .status--pending {
+        background: rgba(238, 106, 76, 0.12);
+        color: var(--accent-strong);
+    }
+
+    .status--done {
+        background: rgba(46, 77, 63, 0.12);
+        color: var(--olive);
+    }
+
+    .task__desc {
+        margin: 0;
+        color: var(--ink-muted);
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    .task__actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .loading,
+    .empty,
+    .error {
+        font-size: 14px;
+        color: var(--ink-muted);
+    }
+
+    .error {
+        color: #a82c2c;
+        background: rgba(208, 64, 64, 0.12);
+        border-radius: 12px;
+        padding: 10px 12px;
+        border: 1px solid rgba(208, 64, 64, 0.2);
+    }
+
+    @media (max-width: 960px) {
+        .board {
+            grid-template-columns: 1fr;
+        }
+
+        .header__meta {
+            width: 100%;
+            justify-content: flex-start;
+        }
+    }
+
+    @media (max-width: 640px) {
+        .page {
+            padding: 32px 18px 64px;
+        }
+
+        .panel {
+            padding: 20px;
+        }
+
+        .form__row {
+            flex-direction: column;
+        }
+    }
+</style>
