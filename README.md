@@ -5,7 +5,7 @@
 Guarda este contenido como `README.md` en la raíz de tu proyecto de Astro.
 
 ```markdown
-# ToDo App - Frontend (Astro)
+# PL-TODO
 
 Interfaz de usuario moderna y rápida construida con **Astro**, enfocada en el rendimiento mediante Server-Side Rendering (SSR) y una experiencia de usuario fluida.
 
@@ -59,4 +59,4 @@ Interfaz de usuario moderna y rápida construida con **Astro**, enfocada en el r
 ## 🐛 Solución de Problemas Comunes
 
 * **Error CORS al pulsar botones:** Asegúrate de que el Backend tiene instalado y configurado `Microsoft.AspNet.WebApi.Cors` en `WebApiConfig.cs`.
-* **Error de conexión en carga inicial:** Verifica que la API .NET esté corriendo y que el puerto en `API_BASE` sea el correcto.
+* **Error de conexión en carga inicial:** Verifica que la API .NET esté corrienda y que el puerto en `API_BASE` sea el correcto.
